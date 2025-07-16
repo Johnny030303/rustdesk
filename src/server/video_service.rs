@@ -1216,12 +1216,20 @@ pub fn make_display_changed_msg(
                         vec![]
                     } else {
                         // Only provide 1920x1080 as supported resolution
-                        vec![(1920, 1080)]
+                        vec![Resolution {
+                            width: 1920,
+                            height: 1080,
+                            ..Default::default()
+                        }]
                     }
                 }
                 VideoSource::Camera => {
                     // For camera, only provide 1920x1080
-                    vec![(1920, 1080)]
+                    vec![Resolution {
+                        width: 1920,
+                        height: 1080,
+                        ..Default::default()
+                    }]
                 }
             },
             ..SupportedResolutions::default()
