@@ -69,8 +69,38 @@ jobs:
             ./flutter/lib/generated_bridge.freezed.dart
             ./flutter/windows/flutter/generated_bridge.h
 
+  build-RustDeskTempTopMostWindow:
+    runs-on: windows-2022
+    strategy:
+      matrix:
+        configuration: [Release]
+        platform: [x64]
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build RustDeskTempTopMostWindow
+        working-directory: ${{env.GITHUB_WORKSPACE}}
+        run: |
+          pushd ./libs/RustDeskTempTopMostWindow
+          nuget restore RustDeskTempTopMostWindow.sln
+          msbuild RustDeskTempTopMostWindow.sln /p:Configuration=${{matrix.configuration}} /p:Platform=${{matrix.platform}}
+          popd
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@master
+        with:
+          name: topmostwindow-artifacts
+          path: |
+            ./libs/RustDeskTempTopMostWindow/x64/Release/RustDeskTempTopMostWindow.dll
+
   build-windows:
-    needs: generate-bridge
+    needs: [generate-bridge, build-RustDeskTempTopMostWindow]
     runs-on: windows-2022
     strategy:
       matrix:
@@ -91,6 +121,12 @@ jobs:
         with:
           name: bridge-artifact
           path: ./
+
+      - name: Download RustDeskTempTopMostWindow artifacts
+        uses: actions/download-artifact@master
+        with:
+          name: topmostwindow-artifacts
+          path: "./rustdesk"
 
       - name: Install LLVM and Clang
         uses: KyleMayes/install-llvm-action@v1
