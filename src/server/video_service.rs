@@ -893,14 +893,19 @@ fn get_encoder_config(
     // https://www.wowza.com/community/t/the-correct-keyframe-interval-in-obs-studio/95162
     let keyframe_interval = if record { Some(240) } else { None };
     let negotiated_codec = Encoder::negotiated_codec();
+
+    // Fixed resolution to 1920x1080
+    let target_width = 1920;
+    let target_height = 1080;
+
     match negotiated_codec {
         CodecFormat::H264 | CodecFormat::H265 => {
             #[cfg(feature = "vram")]
             if let Some(feature) = VRamEncoder::try_get(&c.device(), negotiated_codec) {
                 return EncoderCfg::VRAM(VRamEncoderConfig {
                     device: c.device(),
-                    width: c.width,
-                    height: c.height,
+                    width: target_width,
+                    height: target_height,
                     quality,
                     feature,
                     keyframe_interval,
@@ -911,23 +916,23 @@ fn get_encoder_config(
                 return EncoderCfg::HWRAM(HwRamEncoderConfig {
                     name: hw.name,
                     mc_name: hw.mc_name,
-                    width: c.width,
-                    height: c.height,
+                    width: target_width,
+                    height: target_height,
                     quality,
                     keyframe_interval,
                 });
             }
             EncoderCfg::VPX(VpxEncoderConfig {
-                width: c.width as _,
-                height: c.height as _,
+                width: target_width as _,
+                height: target_height as _,
                 quality,
                 codec: VpxVideoCodecId::VP9,
                 keyframe_interval,
             })
         }
         format @ (CodecFormat::VP8 | CodecFormat::VP9) => EncoderCfg::VPX(VpxEncoderConfig {
-            width: c.width as _,
-            height: c.height as _,
+            width: target_width as _,
+            height: target_height as _,
             quality,
             codec: if format == CodecFormat::VP8 {
                 VpxVideoCodecId::VP8
@@ -937,14 +942,14 @@ fn get_encoder_config(
             keyframe_interval,
         }),
         CodecFormat::AV1 => EncoderCfg::AOM(AomEncoderConfig {
-            width: c.width as _,
-            height: c.height as _,
+            width: target_width as _,
+            height: target_height as _,
             quality,
             keyframe_interval,
         }),
         _ => EncoderCfg::VPX(VpxEncoderConfig {
-            width: c.width as _,
-            height: c.height as _,
+            width: target_width as _,
+            height: target_height as _,
             quality,
             codec: VpxVideoCodecId::VP9,
             keyframe_interval,
@@ -1056,8 +1061,8 @@ fn handle_one_frame(
     recorder: Arc<Mutex<Option<Recorder>>>,
     encode_fail_counter: &mut usize,
     first_frame: &mut bool,
-    width: usize,
-    height: usize,
+    _width: usize,  // original width not used
+    _height: usize, // original height not used
 ) -> ResultType<HashSet<i32>> {
     sp.snapshot(|sps| {
         // so that new sub and old sub share the same encoder after switch
@@ -1081,7 +1086,7 @@ fn handle_one_frame(
                 .lock()
                 .unwrap()
                 .as_mut()
-                .map(|r| r.write_message(&msg, width, height));
+                .map(|r| r.write_message(&msg, 1920, 1080)); // Always use 1920x1080 for recording
             send_conn_ids = sp.send_video_frame(msg);
         }
         Err(e) => {
@@ -1196,8 +1201,9 @@ pub fn make_display_changed_msg(
         display: display_idx as _,
         x: display.x,
         y: display.y,
-        width: display.width,
-        height: display.height,
+        // Always report 1920x1080 to client
+        width: 1920,
+        height: 1080,
         cursor_embedded: match source {
             VideoSource::Monitor => display_service::capture_cursor_embedded(),
             VideoSource::Camera => false,
@@ -1209,18 +1215,24 @@ pub fn make_display_changed_msg(
                     if display.name.is_empty() {
                         vec![]
                     } else {
-                        crate::platform::resolutions(&display.name)
+                        // Only provide 1920x1080 as supported resolution
+                        vec![(1920, 1080)]
                     }
                 }
-                VideoSource::Camera => camera::Cameras::get_camera_resolution(display_idx)
-                    .ok()
-                    .into_iter()
-                    .collect(),
+                VideoSource::Camera => {
+                    // For camera, only provide 1920x1080
+                    vec![(1920, 1080)]
+                }
             },
             ..SupportedResolutions::default()
         })
         .into(),
-        original_resolution: display.original_resolution,
+        original_resolution: Some(Resolution {
+            width: display.width as _,
+            height: display.height as _,
+            ..Default::default()
+        })
+        .into(),
         ..Default::default()
     });
     let mut msg_out = Message::new();
@@ -1338,3 +1350,4 @@ fn handle_screenshot(screenshot: Screenshot, msg: String, w: usize, h: usize, da
         log::error!("Failed to send screenshot, {}", e);
     }
 }
+
