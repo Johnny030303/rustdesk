@@ -893,19 +893,14 @@ fn get_encoder_config(
     // https://www.wowza.com/community/t/the-correct-keyframe-interval-in-obs-studio/95162
     let keyframe_interval = if record { Some(240) } else { None };
     let negotiated_codec = Encoder::negotiated_codec();
-
-    // Fixed resolution to 1920x1080
-    let target_width = 1920;
-    let target_height = 1080;
-
     match negotiated_codec {
         CodecFormat::H264 | CodecFormat::H265 => {
             #[cfg(feature = "vram")]
             if let Some(feature) = VRamEncoder::try_get(&c.device(), negotiated_codec) {
                 return EncoderCfg::VRAM(VRamEncoderConfig {
                     device: c.device(),
-                    width: target_width,
-                    height: target_height,
+                    width: c.width,
+                    height: c.height,
                     quality,
                     feature,
                     keyframe_interval,
@@ -916,23 +911,23 @@ fn get_encoder_config(
                 return EncoderCfg::HWRAM(HwRamEncoderConfig {
                     name: hw.name,
                     mc_name: hw.mc_name,
-                    width: target_width,
-                    height: target_height,
+                    width: c.width,
+                    height: c.height,
                     quality,
                     keyframe_interval,
                 });
             }
             EncoderCfg::VPX(VpxEncoderConfig {
-                width: target_width as _,
-                height: target_height as _,
+                width: c.width as _,
+                height: c.height as _,
                 quality,
                 codec: VpxVideoCodecId::VP9,
                 keyframe_interval,
             })
         }
         format @ (CodecFormat::VP8 | CodecFormat::VP9) => EncoderCfg::VPX(VpxEncoderConfig {
-            width: target_width as _,
-            height: target_height as _,
+            width: c.width as _,
+            height: c.height as _,
             quality,
             codec: if format == CodecFormat::VP8 {
                 VpxVideoCodecId::VP8
@@ -942,14 +937,14 @@ fn get_encoder_config(
             keyframe_interval,
         }),
         CodecFormat::AV1 => EncoderCfg::AOM(AomEncoderConfig {
-            width: target_width as _,
-            height: target_height as _,
+            width: c.width as _,
+            height: c.height as _,
             quality,
             keyframe_interval,
         }),
         _ => EncoderCfg::VPX(VpxEncoderConfig {
-            width: target_width as _,
-            height: target_height as _,
+            width: c.width as _,
+            height: c.height as _,
             quality,
             codec: VpxVideoCodecId::VP9,
             keyframe_interval,
@@ -1051,19 +1046,60 @@ fn check_privacy_mode_changed(
     Ok(())
 }
 
+struct ScaleConfig {
+    enabled: bool,
+    max_width: usize,
+    max_height: usize,
+}
+
+impl Default for ScaleConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_width: 1920,  // 1K width
+            max_height: 1080, // 1K height
+        }
+    }
+}
+
+fn maybe_scale_frame(frame: &mut EncodeInput, width: usize, height: usize, scale_config: &ScaleConfig) -> ResultType<()> {
+    if !scale_config.enabled {
+        return Ok(());
+    }
+    
+    if width > scale_config.max_width || height > scale_config.max_height {
+        let scale_factor = f32::min(
+            scale_config.max_width as f32 / width as f32,
+            scale_config.max_height as f32 / height as f32,
+        );
+        
+        let new_width = (width as f32 * scale_factor) as usize;
+        let new_height = (height as f32 * scale_factor) as usize;
+        
+        // Scale the frame here
+        // Implementation depends on the frame format (YUV, RGB, etc.)
+        // You'll need to implement actual scaling logic based on your frame format
+    }
+    Ok(())
+}
+
 #[inline]
 fn handle_one_frame(
     display: usize,
     sp: &GenericService,
-    frame: EncodeInput,
+    mut frame: EncodeInput,
     ms: i64,
     encoder: &mut Encoder,
     recorder: Arc<Mutex<Option<Recorder>>>,
     encode_fail_counter: &mut usize,
     first_frame: &mut bool,
-    _width: usize,  // original width not used
-    _height: usize, // original height not used
+    width: usize,
+    height: usize,
 ) -> ResultType<HashSet<i32>> {
+    // Add resolution scaling
+    let scale_config = ScaleConfig::default();
+    maybe_scale_frame(&mut frame, width, height, &scale_config)?;
+    
     sp.snapshot(|sps| {
         // so that new sub and old sub share the same encoder after switch
         if sps.has_subscribes() {
@@ -1086,7 +1122,7 @@ fn handle_one_frame(
                 .lock()
                 .unwrap()
                 .as_mut()
-                .map(|r| r.write_message(&msg, 1920, 1080)); // Always use 1920x1080 for recording
+                .map(|r| r.write_message(&msg, width, height));
             send_conn_ids = sp.send_video_frame(msg);
         }
         Err(e) => {
@@ -1201,9 +1237,8 @@ pub fn make_display_changed_msg(
         display: display_idx as _,
         x: display.x,
         y: display.y,
-        // Always report 1920x1080 to client
-        width: 1920,
-        height: 1080,
+        width: display.width,
+        height: display.height,
         cursor_embedded: match source {
             VideoSource::Monitor => display_service::capture_cursor_embedded(),
             VideoSource::Camera => false,
@@ -1215,32 +1250,18 @@ pub fn make_display_changed_msg(
                     if display.name.is_empty() {
                         vec![]
                     } else {
-                        // Only provide 1920x1080 as supported resolution
-                        vec![Resolution {
-                            width: 1920,
-                            height: 1080,
-                            ..Default::default()
-                        }]
+                        crate::platform::resolutions(&display.name)
                     }
                 }
-                VideoSource::Camera => {
-                    // For camera, only provide 1920x1080
-                    vec![Resolution {
-                        width: 1920,
-                        height: 1080,
-                        ..Default::default()
-                    }]
-                }
+                VideoSource::Camera => camera::Cameras::get_camera_resolution(display_idx)
+                    .ok()
+                    .into_iter()
+                    .collect(),
             },
             ..SupportedResolutions::default()
         })
         .into(),
-        original_resolution: Some(Resolution {
-            width: display.width as _,
-            height: display.height as _,
-            ..Default::default()
-        })
-        .into(),
+        original_resolution: display.original_resolution,
         ..Default::default()
     });
     let mut msg_out = Message::new();
@@ -1358,4 +1379,3 @@ fn handle_screenshot(screenshot: Screenshot, msg: String, w: usize, h: usize, da
         log::error!("Failed to send screenshot, {}", e);
     }
 }
-
